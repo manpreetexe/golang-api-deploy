@@ -1,0 +1,121 @@
+---
+- name: Deploy Go API with Nginx
+  hosts: server
+  become: true
+
+  vars:
+    - .env 
+
+  tasks:
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - wget
+          - tar
+        state: present
+        update_cache: yes
+
+    - name: Download Go
+      get_url:
+        url: "https://go.dev/dl/go{{ go_version }}.linux-amd64.tar.gz"
+        dest: /tmp/go.tar.gz
+
+    - name: Remove old Go if exists
+      file:
+        path: /usr/local/go
+        state: absent
+
+    - name: Extract Go
+      unarchive:
+        src: /tmp/go.tar.gz
+        dest: /usr/local
+        remote_src: yes
+
+    - name: Ensure Go in PATH
+      lineinfile:
+        path: /etc/profile
+        line: 'export PATH=$PATH:/usr/local/go/bin'
+        state: present
+
+    - name: Create app directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Copy Go project files
+      copy:
+        src: ./go-api/
+        dest: "{{ app_dir }}/"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    - name: Build Go app
+      command: /usr/local/go/bin/go build -o {{ app_name }}
+      args:
+        chdir: "{{ app_dir }}"
+
+    - name: Create systemd service
+      copy:
+        dest: /etc/systemd/system/{{ app_name }}.service
+        content: |
+          [Unit]
+          Description=Go API Service
+          After=network.target
+
+          [Service]
+          ExecStart={{ app_dir }}/{{ app_name }}
+          WorkingDirectory={{ app_dir }}
+          Restart=always
+          User=www-data
+          Environment=PORT={{ listen_port }}
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd
+      command: systemctl daemon-reload
+
+    - name: Enable and start Go service
+      systemd:
+        name: "{{ app_name }}"
+        state: started
+        enabled: true
+
+    - name: Configure Nginx reverse proxy
+      copy:
+        dest: /etc/nginx/sites-available/{{ domain }}
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain }};
+
+              location / {
+                  proxy_pass http://127.0.0.1:{{ listen_port }};
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/{{ domain }}
+        dest: /etc/nginx/sites-enabled/{{ domain }}
+        state: link
+        force: true
+
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Restart Nginx
+      systemd:
+        name: nginx
+        state: restarted

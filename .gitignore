@@ -1,0 +1,11 @@
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+*.log
+*.pem
+*.crt
+# Sensitive files
+terraform.tfvars
+*.env
+ip_address.txt
